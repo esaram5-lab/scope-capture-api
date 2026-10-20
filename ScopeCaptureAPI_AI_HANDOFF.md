@@ -333,3 +333,27 @@ ScopeCaptureClient.auto_connect(
 - 데스크톱 캡처는 창 뒤 데이터나 최신 취득 완료 여부를 알지 못한다.
 - 자동 검색 구현 및 모의 테스트는 완료했으나 Windows 실장비 검증은 남아 있다.
 - 실장비 테스트를 통과했다고 주장하지 않는다.
+
+## 12. v1.2 추가 — 화면 안정 대기(stable)와 창 캡처(--window)
+
+요청: 측정 프로그램(esaram5-lab/scope_tech, `scopetech/capture/screen_api.py`)에서 이 API 로 화면을 받을 때
+(1) 화면 갱신을 고정 대기로 짐작하지 않고, (2) TekScope 창만 찍기. Single/정지는 측정 프로그램이 SCPI 로 처리한다.
+
+서버
+- `POST /capture?stable_ms=N&interval_ms=I&frames=F`: `capture_until_stable()` 가 I ms 간격으로 grab, F 장 연속 동일하면 그 프레임만 PNG 인코딩해 반환.
+  N ms 초과 시 `ScreenNotStable` → HTTP 504. 옵션 검증(`parse_capture_options`) 실패 → 400, 캡처 전에 거절. 옵션이 없으면 기존과 같음.
+- 비교 키: 실서버 `grab()` 은 `(image.size, image.tobytes())`, `CaptureServer(grab=None)` 이면 `capture()` PNG bytes 비교(테스트용).
+- `--window TITLE`: `WindowTarget` 이 캡처마다 `WinWindows`(user32 EnumWindows, IsWindowVisible/IsIconic, DwmGetWindowAttribute
+  DWMWA_EXTENDED_FRAME_BOUNDS → 실패 시 GetWindowRect, 주 화면으로 자름)로 제목 부분 일치(대소문자 무시, z-order 맨 앞) 창의 영역을 bbox 로 사용.
+  서버 자신의 콘솔 창(GetConsoleWindow)과 제목에 scope_capture_server 가 들어간 창은 제외(터미널 제목에 명령줄이 보여 오인하는 것 방지).
+  `--require-foreground` 면 GetForegroundWindow 일치 필요. 창 문제는 `WindowError` → HTTP 503 + 이유 메시지(클라이언트에 그대로 전달).
+  `--list-windows` 로 제목 확인. `--bbox` 와 배타.
+- health: `features: ['stable', 'window']`, `--window` 일 때 `window: {title, found, matched, foreground, rect}` (실패해도 예외 없음).
+
+클라이언트
+- `capture_png(stable_ms=0, interval_ms=None, frames=None)`, `capture_to_file(path, **같은 옵션)`, `capture_scope(..., stable_ms=...)`, CLI `--stable-ms`.
+- `CaptureUnstable(CaptureError)` (504). 400/503 은 서버 메시지 포함. 옵션을 보냈는데 404 면 "서버 업데이트 필요".
+- stable_ms 를 timeout 에 더해 요청한다.
+
+검증: unittest 26개 통과(가짜 grab/가짜 창 목록). 실제 Windows 창 열거·DPI·DWM 경계, TekScope 창 제목, 실화면 안정 시간은 미검증.
+

@@ -1,4 +1,4 @@
-# ScopeCaptureAPI 1.1 — Python 호출 및 직결 LAN 자동 검색
+# ScopeCaptureAPI 1.2 — Python 호출, 직결 LAN 자동 검색, 화면 안정 대기·창 캡처
 
 Tektronix MSO58B Windows의 현재 화면을 외부 Python 프로그램에서 PNG로 받습니다.
 TekScope API/VISA/SCPI를 호출하지 않습니다. 기존 측정 명령끼리의 충돌 자체를 해결하는 프로그램은 아닙니다.
@@ -23,6 +23,22 @@ py -m venv .venv
 
 test.png를 열어 실제 파형과 측정값이 보이는지 확인합니다.
 기존 test.png가 있으면 이름을 바꾸세요. 기존 파일은 덮어쓰지 않습니다.
+
+### 1-1. TekScope 창만 찍기 (선택)
+
+작업표시줄·바탕화면 없이 TekScope 창 영역만 찍으려면 먼저 창 제목을 확인합니다.
+
+```powershell
+.\.venv\Scripts\python.exe scope_capture_server.py --list-windows
+.\.venv\Scripts\python.exe scope_capture_server.py --window TekScope --local-test test_window.png
+```
+
+- `--window 제목일부`: 캡처할 때마다 제목에 이 글자가 들어간 창(대소문자 무시, 맨 앞 창 우선)을 찾아 그 영역만 찍습니다.
+  창이 없거나 최소화돼 있으면 캡처를 거절하고 이유를 돌려줍니다(HTTP 503, 클라이언트 `CaptureError` 메시지).
+- 서버를 띄운 터미널 창은 제목에 명령줄이 보여도 제외합니다.
+- `--require-foreground`: 그 창이 맨 앞에 있을 때만 찍습니다. TekScope 대화상자도 별도 창이라 켜 두면 거절될 수 있습니다.
+- health 응답의 `window` 항목에 창을 찾았는지, 맨 앞인지, 영역이 나옵니다.
+- 창 영역 위에 겹친 알림/대화상자는 그대로 찍힙니다. `--bbox` 와 같이 쓸 수 없습니다.
 
 ## 2. 스코프에서 자동 검색 서버 실행
 
@@ -155,11 +171,28 @@ py scope_capture_client.py --host 192.168.50.2 --health
 py scope_capture_client.py --host 192.168.50.2 --output capture.png
 ```
 
+## 7-1. 화면이 멈출 때까지 기다렸다 찍기 (stable)
+
+```python
+png = scope.capture_png(stable_ms=2000)                     # 최대 2초
+png = scope.capture_png(stable_ms=2000, interval_ms=100, frames=3)
+scope.capture_to_file("capture.png", stable_ms=2000)
+```
+
+- 서버가 interval_ms(기본 100, 20~1000) 간격으로 계속 찍어 frames(기본 3, 2~10)장이 연속으로 똑같으면 그 화면을 돌려줍니다.
+  화면 갱신을 고정 대기로 짐작하지 않아도 됩니다. 스코프 획득을 멈춘 뒤(Single/Stop) 부르세요.
+- stable_ms(최대 10000) 안에 멈추지 않으면 `CaptureUnstable` (HTTP 504). 화면을 저장하지 않습니다.
+  획득이 Run 상태면 파형이 계속 바뀌어 멈추지 않습니다.
+- 바뀐 직후 첫 장이 아직 이전 화면일 수 있으니, 측정 프로그램에서 화면을 바꾼 직후라면 짧은 대기(0.2~0.5초)를 함께 두는 것이 안전합니다.
+- 응답 헤더 `X-Capture-Frames`(찍은 장수), `X-Capture-Stable-Ms`(멈출 때까지 걸린 시간)는 서버 로그에도 남습니다.
+- 클라이언트 timeout 에 stable_ms 가 자동으로 더해집니다. 이전 버전 서버에 stable_ms 를 보내면 404 → "update scope_capture_server.py".
+- CLI: `py scope_capture_client.py --host 192.168.50.2 --output capture.png --stable-ms 2000`
+
 ## 8. 오류 처리와 동작 제약
 
 ```python
 from scope_discovery import DiscoveryError
-from scope_capture_client import CaptureError, CaptureBusy
+from scope_capture_client import CaptureError, CaptureBusy, CaptureUnstable
 
 try:
     scope = ScopeCaptureClient.auto_connect(token_file="capture_token.txt")
@@ -168,6 +201,8 @@ except DiscoveryError as error:
     print("검색/선택/연결 확인 실패:", error)
 except CaptureBusy:
     print("다른 캡처 진행 중: 이번 요청은 실행되지 않았습니다")
+except CaptureUnstable:
+    print("화면이 stable_ms 안에 멈추지 않았습니다(획득 정지 확인)")
 except (CaptureError, OSError, ValueError) as error:
     print("캡처/설정/저장 오류:", error)
 ```
@@ -181,7 +216,7 @@ except (CaptureError, OSError, ValueError) as error:
 - Windows 캡처가 멈춰 Busy가 지속되면 서버를 재시작해야 합니다.
 - 스코프는 로그인/잠금 해제 상태, TekScope 창은 전면에 둡니다. 다른 창과 알림도 그대로 찍힙니다.
 - 측정 완료와 화면 갱신은 다릅니다. 기존 측정 코드가 이를 확인한 뒤 호출해야 합니다.
-- 주 모니터 기본 캡처. --bbox LEFT TOP RIGHT BOTTOM으로 영역 지정 가능.
+- 주 모니터 기본 캡처. --bbox LEFT TOP RIGHT BOTTOM으로 영역 지정, --window 제목으로 창 영역만 캡처 가능.
 - PNG는 서버 메모리에서만 생성. 로그는 capture_server.log, 1MB × 현재 파일 및 백업 3개.
 
 ## 9. 자동 실행
@@ -196,7 +231,8 @@ except (CaptureError, OSError, ValueError) as error:
 py -m unittest -v test_capture_api.py test_discovery.py
 ```
 
-15개 자동 테스트: 기본 캡처 API 6개 + 검색 9개.
+26개 자동 테스트: 기본 캡처 API 6개 + 화면 안정 대기·창 캡처 11개 + 검색 9개.
+창 찾기(user32 EnumWindows/DwmGetWindowAttribute)는 가짜 창 목록으로만 시험했습니다.
 가짜 PNG/로컬 HTTP·UDP 소켓, NIC 열거 mock으로 검증했습니다.
 실제 MSO58B Windows 화면, 실제 Windows NIC broadcast/방화벽, APIPA 직결은 아직 실장비 미검증입니다.
 다른 AI에게는 이 ZIP과 ScopeCaptureAPI_AI_HANDOFF.md를 함께 전달하세요. 인계 문서는 ZIP에도 포함되어 있습니다.

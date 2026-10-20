@@ -8,6 +8,7 @@ import struct
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 
@@ -22,18 +23,23 @@ class CaptureBusy(CaptureError):
     pass
 
 
+class CaptureUnstable(CaptureError):
+    """stable_ms 안에 화면이 멈추지 않음 (획득이 실행 중이거나 화면이 계속 바뀜)."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
-def request(host, port, token, endpoint, timeout):
+def request(host, port, token, endpoint, timeout, query=None):
     if timeout <= 0:
         raise ValueError('timeout must be positive')
     # Validate literal IPv4; avoid proxy routing or sending credentials to redirects.
     socket.inet_pton(socket.AF_INET, host)
+    suffix = '?' + urllib.parse.urlencode(query) if query else ''
     req = urllib.request.Request(
-        f'http://{host}:{port}/{endpoint}',
+        f'http://{host}:{port}/{endpoint}{suffix}',
         data=b'' if endpoint == 'capture' else None,
         headers={'Authorization': 'Bearer ' + token},
         method='POST' if endpoint == 'capture' else 'GET',
@@ -63,9 +69,37 @@ def request(host, port, token, endpoint, timeout):
     except urllib.error.HTTPError as error:
         if error.code == 409:
             raise CaptureBusy('Scope capture busy; request was not queued') from error
+        detail = _error_message(error)
+        if error.code == 504:
+            raise CaptureUnstable(detail or 'Screen did not settle') from error
+        if error.code == 400:
+            raise CaptureError(f'HTTP 400: {detail}') from error
+        if error.code == 404 and query:
+            raise CaptureError('HTTP 404: server does not support capture options; update scope_capture_server.py') from error
+        if error.code == 503:
+            raise CaptureError(f'HTTP 503: {detail or "capture failed"} (see scope capture_server.log)') from error
         raise CaptureError(f'HTTP {error.code}: check token, allowed IP, or server log') from error
     except (OSError, ValueError) as error:
         raise CaptureError(f'Communication failed: {error}') from error
+
+
+def _error_message(error):
+    try:
+        return str(json.loads(error.read(4096)).get('message', ''))
+    except (OSError, ValueError, AttributeError):
+        return ''
+
+
+def capture_options(stable_ms=0, interval_ms=None, frames=None):
+    """Query for /capture. stable_ms > 0: wait until the screen stops changing (server must support it)."""
+    if not stable_ms:
+        return None
+    query = {'stable_ms': int(stable_ms)}
+    if interval_ms is not None:
+        query['interval_ms'] = int(interval_ms)
+    if frames is not None:
+        query['frames'] = int(frames)
+    return query
 
 
 def validate_png(data):
@@ -98,13 +132,15 @@ def validate_png(data):
     raise CaptureError('PNG ending missing')
 
 
-def capture_scope(host, save_path, timeout=5, *, token=None, token_file=None, port=8765):
+def capture_scope(host, save_path, timeout=5, *, token=None, token_file=None, port=8765,
+                  stable_ms=0, interval_ms=None, frames=None):
     """Capture once; return Path. Never overwrite or retry. Token required."""
     if token is None:
         token = Path(token_file or Path(__file__).with_name('capture_token.txt')).read_text(encoding='utf-8').strip()
     if Path(save_path).exists():
         raise FileExistsError(f'Output already exists: {save_path}')
-    return save_png(request(host, port, token, 'capture', timeout), save_path)
+    query = capture_options(stable_ms, interval_ms, frames)
+    return save_png(request(host, port, token, 'capture', timeout + stable_ms / 1000, query), save_path)
 
 
 def save_png(data, save_path):
@@ -180,15 +216,18 @@ class ScopeCaptureClient:
     def health(self):
         return json.loads(request(self.host, self.port, self.token, 'health', self.timeout))
 
-    def capture_png(self):
-        data = request(self.host, self.port, self.token, 'capture', self.timeout)
+    def capture_png(self, stable_ms=0, interval_ms=None, frames=None):
+        """Capture once. stable_ms > 0: the server grabs every interval_ms (default 100) and returns the
+        frame once `frames` (default 3) consecutive grabs are identical; CaptureUnstable after stable_ms."""
+        query = capture_options(stable_ms, interval_ms, frames)
+        data = request(self.host, self.port, self.token, 'capture', self.timeout + stable_ms / 1000, query)
         validate_png(data)
         return data
 
-    def capture_to_file(self, save_path):
+    def capture_to_file(self, save_path, **options):
         if Path(save_path).exists():
             raise FileExistsError(f'Output already exists: {save_path}')
-        return save_png(self.capture_png(), save_path)
+        return save_png(self.capture_png(**options), save_path)
 
 
 def main():
@@ -197,6 +236,7 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--token-file', type=Path, default=Path(__file__).with_name('capture_token.txt'))
     parser.add_argument('--timeout', type=float, default=5)
+    parser.add_argument('--stable-ms', type=int, default=0, help='Wait until the screen stops changing (max ms)')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output', type=Path)
     group.add_argument('--health', action='store_true')
@@ -206,7 +246,8 @@ def main():
         if args.health:
             print(json.loads(request(args.host, args.port, token, 'health', args.timeout)))
         else:
-            print('Saved:', capture_scope(args.host, args.output, args.timeout, token=token, port=args.port))
+            print('Saved:', capture_scope(args.host, args.output, args.timeout, token=token, port=args.port,
+                                          stable_ms=args.stable_ms))
         return 0
     except (CaptureError, OSError, ValueError) as error:
         print('ERROR:', error)
