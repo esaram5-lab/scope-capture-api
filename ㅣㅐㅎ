@@ -1,0 +1,19 @@
+----------------------------------------------------------------------
+Ran 15 tests in 3.357s
+
+OK
+PS C:\Users\mdl\Desktop\허동환\ScopeCaptureAPI_v1.1\ScopeCaptureAPI> py .\example_auto_connect.py
+IPv4 interfaces: [NetworkInterface(name='이더넷 4', address='169.254.1.1', netmask='255.255.0.0')]
+Traceback (most recent call last):
+  File "C:\Users\mdl\Desktop\허동환\ScopeCaptureAPI_v1.1\ScopeCaptureAPI\example_auto_connect.py", line 24, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\mdl\Desktop\허동환\ScopeCaptureAPI_v1.1\ScopeCaptureAPI\example_auto_connect.py", line 12, in main
+    scope = ScopeCaptureClient.auto_connect(
+        token_file=token_file,
+    ...<2 lines>...
+        # name='MSO58B_01',
+    )
+  File "C:\Users\mdl\Desktop\허동환\ScopeCaptureAPI_v1.1\ScopeCaptureAPI\scope_capture_client.py", line 164, in auto_connect
+    raise DiscoveryError('No matching authenticated scope. Check cable/IP, token, server --discovery and UDP firewall.')
+scope_discovery.DiscoveryError: No matching authenticated scope. Check cable/IP, token, server --discovery and UDP firewall.
