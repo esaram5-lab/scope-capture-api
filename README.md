@@ -6,7 +6,8 @@ TekScope API/VISA/SCPI를 호출하지 않고 Windows 화면 캡처를 사용합
 - Python 클래스 API: 연결 확인, PNG bytes 반환, 파일 저장
 - LAN 직결 환경용 인증된 UDP 자동 검색
 - 중복 캡처 요청 거절, 파일 덮어쓰기 방지
-- 테스트 15개 통과; 실제 MSO58B Windows 및 직결 LAN 검증은 별도 필요
+- 화면이 멈출 때까지 기다렸다 찍기(`stable_ms`), 지정 창(TekScope)만 찍기(`--window`)
+- 테스트 26개 통과; 실제 MSO58B Windows 및 직결 LAN 검증은 별도 필요
 
 ## 안내
 
@@ -23,6 +24,8 @@ TekScope API/VISA/SCPI를 호출하지 않고 Windows 화면 캡처를 사용합
 py -m pip install Pillow
 py scope_capture_server.py --local-test test.png
 py scope_capture_server.py --discovery --name MSO58B_01
+# TekScope 창만 찍기 (창 제목 확인: --list-windows)
+py scope_capture_server.py --discovery --name MSO58B_01 --window TekScope
 ```
 
 생성된 `capture_token.txt`를 외부 PC에 별도로 복사합니다. 토큰은 저장소에 올리지 않습니다.
@@ -39,6 +42,8 @@ from scope_capture_client import ScopeCaptureClient
 
 scope = ScopeCaptureClient.auto_connect(token_file="capture_token.txt")
 scope.capture_to_file("capture.png")
+# 화면이 멈출 때까지(100 ms 간격, 3장 연속 동일) 최대 2초 기다렸다 찍기
+png = scope.capture_png(stable_ms=2000)
 ```
 
 호출 프로그램 옆에 `scope_capture_client.py`와 `scope_discovery.py`를 둡니다.
