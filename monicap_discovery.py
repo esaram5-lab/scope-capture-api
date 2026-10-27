@@ -1,19 +1,16 @@
-"""Authenticated IPv4 UDP discovery for Scope Capture. Python 3.9+."""
+"""IPv4 UDP discovery for Monicap. Python 3.9+."""
 from dataclasses import dataclass
-import hashlib
-import hmac
 import ipaddress
 import json
 import logging
-from pathlib import Path
 import secrets
 import select
 import socket
 import threading
 import time
 
-SERVICE = 'scope-capture'
-VERSION = 1
+SERVICE = 'monicap'
+VERSION = 2
 DISCOVERY_PORT = 8766
 MAX_PACKET = 2048
 
@@ -34,7 +31,7 @@ class NetworkInterface:
 
 
 @dataclass(frozen=True)
-class ScopeDevice:
+class CaptureDevice:
     device_id: str
     name: str
     host: str
@@ -43,40 +40,23 @@ class ScopeDevice:
     local_address: str
 
 
-def read_token(token=None, token_file=None):
-    value = token if token is not None else Path(
-        token_file or Path(__file__).with_name('capture_token.txt')
-    ).read_text(encoding='utf-8').strip()
-    if not value:
-        raise ValueError('Empty capture token')
-    return value
-
-
 def canonical(payload):
     return json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
 
 
-def encode_packet(payload, token):
-    payload = dict(payload)
-    payload['signature'] = hmac.new(token.encode(), canonical(payload), hashlib.sha256).hexdigest()
+def encode_packet(payload):
     packet = canonical(payload)
     if len(packet) > MAX_PACKET:
         raise ValueError('Discovery packet too large')
     return packet
 
 
-def decode_packet(packet, token, kind):
+def decode_packet(packet, kind):
     try:
         if len(packet) > MAX_PACKET:
             return None
         data = json.loads(packet)
         if not isinstance(data, dict):
-            return None
-        signature = data.pop('signature', None)
-        if not isinstance(signature, str) or len(signature) != 64:
-            return None
-        expected = hmac.new(token.encode(), canonical(data), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
             return None
         if data.get('service') != SERVICE or data.get('version') != VERSION or data.get('type') != kind:
             return None
@@ -115,9 +95,9 @@ def list_interfaces():
     return sorted(set(result), key=lambda n: (n.name, n.address))
 
 
-def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DISCOVERY_PORT,
+def discover_devices(timeout=2, *, discovery_port=DISCOVERY_PORT,
                     interface_names=None, interfaces=None, targets=None):
-    """Return authenticated ScopeDevice routes. Never captures or changes IPs.
+    """Return CaptureDevice routes. Never captures or changes IPs.
 
     interfaces: optional NetworkInterface list (bypasses psutil).
     targets: optional explicit IPv4 discovery targets, mainly for diagnostics/tests.
@@ -125,7 +105,6 @@ def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DI
     """
     if timeout <= 0 or not 1 <= discovery_port <= 65535:
         raise ValueError('Positive timeout and valid UDP port required')
-    token = read_token(token, token_file)
     nics = list(list_interfaces() if interfaces is None else interfaces)
     if interface_names is not None:
         names = set(interface_names)
@@ -133,7 +112,7 @@ def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DI
     if not nics:
         raise DiscoveryError('No active matching IPv4 interface. Check cable, adapter name and assigned IP; then retry.')
     nonce = secrets.token_hex(16)
-    packet = encode_packet({'service': SERVICE, 'version': VERSION, 'type': 'discover', 'nonce': nonce}, token)
+    packet = encode_packet({'service': SERVICE, 'version': VERSION, 'type': 'discover', 'nonce': nonce})
     sockets, routes, errors, found = [], {}, [], {}
     try:
         for nic in nics:
@@ -172,7 +151,7 @@ def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DI
                     raw, peer = sock.recvfrom(MAX_PACKET + 1)
                 except OSError:
                     continue
-                data = decode_packet(raw, token, 'reply')
+                data = decode_packet(raw, 'reply')
                 if not data or data['nonce'] != nonce:
                     continue
                 port, device_id, name = data.get('port'), data.get('device_id'), data.get('name')
@@ -183,7 +162,7 @@ def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DI
                 if not isinstance(name, str) or not 1 <= len(name) <= 128:
                     continue
                 nic = routes[sock][0]
-                device = ScopeDevice(device_id, name, peer[0], port, nic.name, nic.address)
+                device = CaptureDevice(device_id, name, peer[0], port, nic.name, nic.address)
                 found[(device_id, peer[0], port)] = device
         if not sent:
             raise DiscoveryError('No discovery request could be sent: ' + '; '.join(errors[:4]))
@@ -194,11 +173,11 @@ def discover_scopes(timeout=2, *, token=None, token_file=None, discovery_port=DI
 
 
 class DiscoveryResponder:
-    def __init__(self, token, name, device_id, api_port, *, bind='0.0.0.0', port=DISCOVERY_PORT,
+    def __init__(self, name, device_id, api_port, *, bind='0.0.0.0', port=DISCOVERY_PORT,
                  allowed_ip=None, api_bind='0.0.0.0'):
         if not 1 <= len(name) <= 128 or not 1 <= len(device_id) <= 128:
             raise ValueError('Device name and ID must be 1..128 characters')
-        self.token, self.name, self.device_id = token, name, device_id
+        self.name, self.device_id = name, device_id
         self.api_port, self.allowed_ip, self.api_bind = api_port, allowed_ip, api_bind
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -209,7 +188,7 @@ class DiscoveryResponder:
             raise
         self.port = self.sock.getsockname()[1]
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.run, name='ScopeDiscovery', daemon=True)
+        self.thread = threading.Thread(target=self.run, name='MonicapDiscovery', daemon=True)
 
     def start(self):
         self.thread.start()
@@ -232,7 +211,7 @@ class DiscoveryResponder:
                 return
             if self.allowed_ip and peer[0] != self.allowed_ip:
                 continue
-            data = decode_packet(raw, self.token, 'discover')
+            data = decode_packet(raw, 'discover')
             if not data:
                 continue
             now = time.monotonic()
@@ -252,7 +231,7 @@ class DiscoveryResponder:
                     continue
             reply = encode_packet({'service': SERVICE, 'version': VERSION, 'type': 'reply',
                                    'nonce': data['nonce'], 'name': self.name,
-                                   'device_id': self.device_id, 'port': self.api_port}, self.token)
+                                   'device_id': self.device_id, 'port': self.api_port})
             try:
                 self.sock.sendto(reply, peer)
                 recent[peer] = now

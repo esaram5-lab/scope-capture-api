@@ -1,22 +1,18 @@
-"""Run on the controller PC; edit SCOPE_IP and token path first."""
+"""Run on the client PC; edit SERVER_IP first."""
 from datetime import datetime
 from pathlib import Path
-from scope_capture_client import ScopeCaptureClient, CaptureBusy, CaptureError
+from monicap_client import MonicapClient, CaptureBusy, CaptureError
 
-SCOPE_IP = '192.168.0.10'
+SERVER_IP = '192.168.0.10'
 
 
 def main():
-    scope = ScopeCaptureClient(
-        SCOPE_IP,
-        token_file=Path(__file__).with_name('capture_token.txt'),
-        timeout=5,
-    )
-    print(scope.health())
-    # Call after your existing measurement and display update have completed.
-    filename = datetime.now().strftime('scope_%Y%m%d_%H%M%S_%f.png')
+    client = MonicapClient(SERVER_IP, timeout=5)
+    print(client.health())
+    # Call after the screen you want to capture is shown.
+    filename = datetime.now().strftime('screen_%Y%m%d_%H%M%S_%f.png')
     try:
-        print('Saved:', scope.capture_to_file(Path('captures') / filename))
+        print('Saved:', client.capture_to_file(Path('captures') / filename))
     except CaptureBusy:
         print('Capture busy. This request was not queued.')
     except (CaptureError, OSError) as error:

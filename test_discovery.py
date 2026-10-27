@@ -6,26 +6,25 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from scope_discovery import (
+from monicap_discovery import (
     DiscoveryResponder, DiscoveryError, NetworkInterface,
-    discover_scopes, decode_packet, encode_packet, list_interfaces, SERVICE, VERSION,
+    discover_devices, decode_packet, encode_packet, list_interfaces, SERVICE, VERSION,
 )
-from scope_capture_client import ScopeCaptureClient
-from scope_capture_server import CaptureServer
+from monicap_client import MonicapClient
+from monicap_server import CaptureServer
 from test_capture_api import PNG
 
-TOKEN = 'paired-device-token-123456789'
 NIC = NetworkInterface('test-loopback', '127.0.0.1', '255.0.0.0')
 
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
-        self.http = CaptureServer(('127.0.0.1', 0), TOKEN, lambda: PNG)
+        self.http = CaptureServer(('127.0.0.1', 0), lambda: PNG)
         self.worker = threading.Thread(target=self.http.serve_forever, kwargs={'poll_interval': 0.01})
         self.worker.start()
-        self.udp = DiscoveryResponder(TOKEN, 'MSO58B_01', 'device-one', self.http.server_port,
+        self.udp = DiscoveryResponder('LAB_PC_01', 'device-one', self.http.server_port,
                                      bind='127.0.0.1', port=0).start()
-        self.options = dict(token=TOKEN, interfaces=[NIC], targets=['127.0.0.1'],
+        self.options = dict(interfaces=[NIC], targets=['127.0.0.1'],
                             discovery_port=self.udp.port)
 
     def tearDown(self):
@@ -35,38 +34,40 @@ class DiscoveryTests(unittest.TestCase):
         self.worker.join(2)
 
     def test_discovery_deduplicates_replies_and_captures(self):
-        found = discover_scopes(0.55, **self.options)
+        found = discover_devices(0.55, **self.options)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].host, '127.0.0.1')
-        self.assertEqual(found[0].name, 'MSO58B_01')
-        client = ScopeCaptureClient.auto_connect(discovery_timeout=0.1, **self.options)
+        self.assertEqual(found[0].name, 'LAB_PC_01')
+        client = MonicapClient.auto_connect(discovery_timeout=0.1, **self.options)
         self.assertEqual(client.capture_png(), PNG)
 
-    def test_wrong_token_no_device(self):
-        options = dict(self.options, token='wrong-token')
-        self.assertEqual(discover_scopes(0.1, **options), [])
-        with self.assertRaisesRegex(DiscoveryError, 'No matching'):
-            ScopeCaptureClient.auto_connect(discovery_timeout=0.1, **options)
+    def test_no_device_on_other_port(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent:
+            silent.bind(('127.0.0.1', 0))
+            options = dict(self.options, discovery_port=silent.getsockname()[1])
+            self.assertEqual(discover_devices(0.1, **options), [])
+            with self.assertRaisesRegex(DiscoveryError, 'No matching'):
+                MonicapClient.auto_connect(discovery_timeout=0.1, **options)
 
     def test_filter_and_multiple_device_rejection(self):
-        device = discover_scopes(0.1, **self.options)[0]
-        second = replace(device, name='MSO58B_02', device_id='device-two')
-        with patch('scope_discovery.discover_scopes', return_value=[device, second]):
-            with self.assertRaisesRegex(DiscoveryError, 'Multiple scopes'):
-                ScopeCaptureClient.auto_connect(token=TOKEN)
-            client = ScopeCaptureClient.auto_connect(token=TOKEN, name='MSO58B_01')
+        device = discover_devices(0.1, **self.options)[0]
+        second = replace(device, name='LAB_PC_02', device_id='device-two')
+        with patch('monicap_discovery.discover_devices', return_value=[device, second]):
+            with self.assertRaisesRegex(DiscoveryError, 'Multiple capture servers'):
+                MonicapClient.auto_connect()
+            client = MonicapClient.auto_connect(name='LAB_PC_01')
             self.assertEqual(client.capture_png(), PNG)
-            client = ScopeCaptureClient.auto_connect(token=TOKEN, device_id='device-one')
+            client = MonicapClient.auto_connect(device_id='device-one')
             self.assertEqual(client.host, '127.0.0.1')
 
     def test_multiple_routes_one_device_fallback(self):
-        device = discover_scopes(0.1, **self.options)[0]
+        device = discover_devices(0.1, **self.options)[0]
         with socket.socket() as closed:
             closed.bind(('127.0.0.1', 0))
             port = closed.getsockname()[1]
         bad = replace(device, port=port)
-        with patch('scope_discovery.discover_scopes', return_value=[bad, device]):
-            client = ScopeCaptureClient.auto_connect(token=TOKEN, timeout=0.1)
+        with patch('monicap_discovery.discover_devices', return_value=[bad, device]):
+            client = MonicapClient.auto_connect(timeout=0.1)
             self.assertEqual(client.capture_png(), PNG)
 
     def test_interfaces_and_apipa_broadcast(self):
@@ -75,19 +76,18 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(NetworkInterface('Ethernet', '192.168.50.1', '255.255.255.0').broadcast,
                          '192.168.50.255')
         with self.assertRaisesRegex(DiscoveryError, 'No active'):
-            discover_scopes(0.1, interface_names=['missing'], **self.options)
+            discover_devices(0.1, interface_names=['missing'], **self.options)
 
-    def test_malformed_unauthenticated_packets_ignored(self):
+    def test_malformed_packets_ignored(self):
         request = dict(service=SERVICE, version=VERSION, type='discover', nonce='a'*32)
-        good = encode_packet(request, TOKEN)
-        self.assertEqual(decode_packet(good, TOKEN, 'discover'), request)
-        for raw in (b'[]', b'not json', b'x'*2049, b'{}', good.replace(b'scope-capture', b'scope-wrongxx')):
-            self.assertIsNone(decode_packet(raw, TOKEN, 'discover'))
-        self.assertIsNone(decode_packet(good, 'wrong', 'discover'))
-        self.assertIsNone(decode_packet(encode_packet(dict(request, version=99), TOKEN), TOKEN, 'discover'))
+        good = encode_packet(request)
+        self.assertEqual(decode_packet(good, 'discover'), request)
+        for raw in (b'[]', b'not json', b'x'*2049, b'{}', good.replace(b'monicap', b'monicaq')):
+            self.assertIsNone(decode_packet(raw, 'discover'))
+        self.assertIsNone(decode_packet(encode_packet(dict(request, version=99)), 'discover'))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
             sender.sendto(b'bad-json', ('127.0.0.1', self.udp.port))
-        self.assertEqual(len(discover_scopes(0.1, **self.options)), 1)
+        self.assertEqual(len(discover_devices(0.1, **self.options)), 1)
 
     def test_stale_nonce_and_invalid_port_ignored(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as fake:
@@ -95,20 +95,20 @@ class DiscoveryTests(unittest.TestCase):
             fake.settimeout(1)
             def reply():
                 data, peer = fake.recvfrom(2048)
-                request = decode_packet(data, TOKEN, 'discover')
+                request = decode_packet(data, 'discover')
                 base = dict(service=SERVICE, version=VERSION, type='reply',
                             nonce=request['nonce'], name='fake', device_id='fake', port=8765)
-                fake.sendto(encode_packet(dict(base, nonce='0'*32), TOKEN), peer)
-                fake.sendto(encode_packet(dict(base, port=70000), TOKEN), peer)
+                fake.sendto(encode_packet(dict(base, nonce='0'*32)), peer)
+                fake.sendto(encode_packet(dict(base, port=70000)), peer)
                 fake.sendto(b'{}', peer)
             with ThreadPoolExecutor(max_workers=1) as pool:
                 task = pool.submit(reply)
-                self.assertEqual(discover_scopes(0.1, **dict(self.options, discovery_port=fake.getsockname()[1])), [])
+                self.assertEqual(discover_devices(0.1, **dict(self.options, discovery_port=fake.getsockname()[1])), [])
                 task.result()
 
     def test_responder_ip_filter(self):
         self.udp.allowed_ip = '192.0.2.1'
-        self.assertEqual(discover_scopes(0.1, **self.options), [])
+        self.assertEqual(discover_devices(0.1, **self.options), [])
 
     def test_psutil_adapter_filtering(self):
         from types import SimpleNamespace as Obj
