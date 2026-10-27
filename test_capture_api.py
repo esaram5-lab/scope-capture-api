@@ -6,8 +6,8 @@ import threading
 import unittest
 import zlib
 
-from scope_capture_server import CaptureServer, WindowTarget, capture_until_stable, ScreenNotStable
-from scope_capture_client import ScopeCaptureClient, CaptureError, CaptureBusy, CaptureUnstable, validate_png, request
+from monicap_server import CaptureServer, WindowTarget, capture_until_stable, ScreenNotStable
+from monicap_client import MonicapClient, CaptureError, CaptureBusy, CaptureUnstable, validate_png, request
 
 
 def chunk(kind, data):
@@ -23,7 +23,7 @@ class Tests(unittest.TestCase):
         self.server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: PNG)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01})
         self.thread.start()
-        self.client = ScopeCaptureClient('127.0.0.1', token='test-token', port=self.server.server_port)
+        self.client = MonicapClient('127.0.0.1', token='test-token', port=self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()
@@ -116,7 +116,7 @@ class StableCaptureTests(unittest.TestCase):
         self.server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: PNG)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01})
         self.thread.start()
-        self.client = ScopeCaptureClient('127.0.0.1', token='test-token', port=self.server.server_port)
+        self.client = MonicapClient('127.0.0.1', token='test-token', port=self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()
@@ -158,8 +158,8 @@ class StableCaptureTests(unittest.TestCase):
     def test_health_reports_features_and_window(self):
         self.assertIn('stable', self.client.health()['features'])
         self.assertNotIn('window', self.client.health())
-        self.server.status = lambda: {'title': 'TekScope', 'found': True}
-        self.assertEqual(self.client.health()['window'], {'title': 'TekScope', 'found': True})
+        self.server.status = lambda: {'title': 'Calculator', 'found': True}
+        self.assertEqual(self.client.health()['window'], {'title': 'Calculator', 'found': True})
 
 
 class FakeWindows:
@@ -178,44 +178,44 @@ class FakeWindows:
 
 class WindowTargetTests(unittest.TestCase):
     def test_ignores_server_console_title(self):
-        api = FakeWindows([(1, 'C:\\ScopeCapture\\python.exe scope_capture_server.py --window TekScope'), (2, 'TekScope')])
-        self.assertEqual(WindowTarget('TekScope', api=api).find(), (2, 'TekScope'))
+        api = FakeWindows([(1, 'C:\\Monicap\\python.exe monicap_server.py --window Calculator'), (2, 'Calculator')])
+        self.assertEqual(WindowTarget('Calculator', api=api).find(), (2, 'Calculator'))
 
     def test_topmost_title_match_and_bbox(self):
-        api = FakeWindows([(1, 'Notepad'), (2, 'tekscope - MSO58B'), (3, 'TekScope old')], foreground=2,
+        api = FakeWindows([(1, 'Notepad'), (2, 'calculator - standard'), (3, 'Calculator old')], foreground=2,
                           rects={2: (0, 0, 1900, 1040)})
-        target = WindowTarget('TekScope', api=api)
+        target = WindowTarget('Calculator', api=api)
         self.assertEqual(target.bbox(), (0, 0, 1900, 1040))
-        self.assertEqual(target.status(), {'title': 'TekScope', 'found': True, 'matched': 'tekscope - MSO58B',
+        self.assertEqual(target.status(), {'title': 'Calculator', 'found': True, 'matched': 'calculator - standard',
                                            'foreground': True, 'rect': [0, 0, 1900, 1040]})
 
     def test_missing_background_and_offscreen_windows_fail_clearly(self):
         with self.assertRaisesRegex(RuntimeError, 'not found'):
-            WindowTarget('TekScope', api=FakeWindows([(1, 'Notepad')])).bbox()
-        background = FakeWindows([(1, 'Notepad'), (2, 'TekScope')], foreground=1)
-        self.assertEqual(WindowTarget('TekScope', api=background).bbox(), (0, 0, 1920, 1080))
+            WindowTarget('Calculator', api=FakeWindows([(1, 'Notepad')])).bbox()
+        background = FakeWindows([(1, 'Notepad'), (2, 'Calculator')], foreground=1)
+        self.assertEqual(WindowTarget('Calculator', api=background).bbox(), (0, 0, 1920, 1080))
         with self.assertRaisesRegex(RuntimeError, 'not in front'):
-            WindowTarget('TekScope', require_foreground=True, api=background).bbox()
-        offscreen = FakeWindows([(2, 'TekScope')], rects={2: (1920, 0, 1920, 1080)})
+            WindowTarget('Calculator', require_foreground=True, api=background).bbox()
+        offscreen = FakeWindows([(2, 'Calculator')], rects={2: (1920, 0, 1920, 1080)})
         with self.assertRaisesRegex(RuntimeError, 'off screen'):
-            WindowTarget('TekScope', api=offscreen).bbox()
+            WindowTarget('Calculator', api=offscreen).bbox()
 
     def test_status_never_raises(self):
         class Broken(FakeWindows):
             def windows(self):
                 raise OSError('EnumWindows failed')
-        info = WindowTarget('TekScope', api=Broken([])).status()
+        info = WindowTarget('Calculator', api=Broken([])).status()
         self.assertFalse(info['found'])
         self.assertIn('EnumWindows failed', info['error'])
 
     def test_window_failure_is_capture_error_503(self):
-        target = WindowTarget('TekScope', api=FakeWindows([]))
+        target = WindowTarget('Calculator', api=FakeWindows([]))
         server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: (target.bbox(), PNG)[1], status=target.status)
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
         thread.start()
         try:
-            client = ScopeCaptureClient('127.0.0.1', token='test-token', port=server.server_port)
-            with self.assertRaisesRegex(CaptureError, "503: Window not found: 'TekScope'"):
+            client = MonicapClient('127.0.0.1', token='test-token', port=server.server_port)
+            with self.assertRaisesRegex(CaptureError, "503: Window not found: 'Calculator'"):
                 client.capture_png()
             self.assertFalse(client.health()['window']['found'])
         finally:

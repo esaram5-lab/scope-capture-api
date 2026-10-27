@@ -1,4 +1,4 @@
-"""Windows desktop capture over LAN. No Tektronix API or SCPI calls."""
+"""Monicap: Windows desktop screen capture over LAN."""
 import argparse
 import ctypes
 from datetime import datetime, timezone
@@ -33,7 +33,7 @@ def check_desktop():
     user32.CloseDesktop.argtypes = [ctypes.c_void_p]
     desktop = user32.OpenInputDesktop(0, False, 0x0100)
     if not desktop:
-        raise RuntimeError('Interactive desktop unavailable. Unlock the scope Windows session.')
+        raise RuntimeError('Interactive desktop unavailable. Unlock the Windows session.')
     try:
         if not user32.SwitchDesktop(desktop):
             raise RuntimeError('Desktop locked or unavailable.')
@@ -123,7 +123,7 @@ class WindowError(RuntimeError):
 
 
 class WindowTarget:
-    """Capture only one application window (e.g. TekScope), found by title on every capture."""
+    """Capture only one application window (e.g. Calculator), found by title on every capture."""
 
     def __init__(self, title, require_foreground=False, api=None):
         if not title.strip():
@@ -135,15 +135,15 @@ class WindowTarget:
     def find(self):
         needle = self.title.casefold()
         for hwnd, title in self.api.windows():
-            # 서버를 띄운 터미널 제목에 '--window TekScope' 가 보여 잘못 고르는 것을 막는다
-            if needle in title.casefold() and 'scope_capture_server' not in title.casefold():
+            # 서버를 띄운 터미널 제목에 '--window 제목' 가 보여 잘못 고르는 것을 막는다
+            if needle in title.casefold() and 'monicap_server' not in title.casefold():
                 return hwnd, title
         return None, None
 
     def bbox(self):
         hwnd, title = self.find()
         if hwnd is None:
-            raise WindowError(f'Window not found: {self.title!r}. Is the scope application running and not minimized?')
+            raise WindowError(f'Window not found: {self.title!r}. Is the application running and not minimized?')
         if self.require_foreground and self.api.foreground() != hwnd:
             raise WindowError(f'Window {title!r} is not in front')
         left, top, right, bottom = self.api.rect(hwnd)
@@ -235,7 +235,7 @@ class CaptureServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'ScopeCapture/1.0'
+    server_version = 'Monicap/2.0'
 
     def setup(self):
         super().setup()
@@ -326,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 except Exception:
                     logging.exception('Capture failed')
-                    self.message(503, 'Desktop capture failed; check scope server log, unlocked session and window')
+                    self.message(503, 'Desktop capture failed; check server log, unlocked session and window')
                     return
                 self.respond(200, data, 'image/png', headers)
                 logging.info('capture OK client=%s bytes=%d seconds=%.3f %s', self.client_address[0], len(data),
@@ -351,7 +351,7 @@ def main():
     area = parser.add_mutually_exclusive_group()
     area.add_argument('--bbox', nargs=4, type=int, metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'))
     area.add_argument('--window', metavar='TITLE',
-                      help='Capture only the window whose title contains TITLE (e.g. TekScope), looked up each capture')
+                      help='Capture only the window whose title contains TITLE (e.g. Calculator), looked up each capture')
     parser.add_argument('--require-foreground', action='store_true',
                         help='With --window: refuse to capture unless that window is in front')
     parser.add_argument('--list-windows', action='store_true', help='Print visible window titles and exit')
@@ -365,7 +365,7 @@ def main():
     if args.bbox and (args.bbox[2] <= args.bbox[0] or args.bbox[3] <= args.bbox[1]):
         parser.error('bbox requires RIGHT > LEFT and BOTTOM > TOP')
     if os.name != 'nt':
-        parser.error('Run this server on the scope Windows desktop')
+        parser.error('Run this server on the Windows desktop to capture')
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except (AttributeError, OSError):
@@ -406,7 +406,7 @@ def main():
                        status=target.status if target else None) as server:
         responder = None
         if args.discovery:
-            from scope_discovery import DiscoveryResponder
+            from monicap_discovery import DiscoveryResponder
             if not args.device_id_file.exists():
                 with args.device_id_file.open('x', encoding='utf-8') as output:
                     output.write(str(uuid.uuid4()))

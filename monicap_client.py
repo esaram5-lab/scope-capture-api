@@ -1,4 +1,4 @@
-"""Standard-library client. No automatic retries or Tektronix commands."""
+"""Monicap standard-library client. No automatic retries."""
 import argparse
 import json
 import os
@@ -68,16 +68,16 @@ def request(host, port, token, endpoint, timeout, query=None):
             return b''.join(chunks)
     except urllib.error.HTTPError as error:
         if error.code == 409:
-            raise CaptureBusy('Scope capture busy; request was not queued') from error
+            raise CaptureBusy('Capture busy; request was not queued') from error
         detail = _error_message(error)
         if error.code == 504:
             raise CaptureUnstable(detail or 'Screen did not settle') from error
         if error.code == 400:
             raise CaptureError(f'HTTP 400: {detail}') from error
         if error.code == 404 and query:
-            raise CaptureError('HTTP 404: server does not support capture options; update scope_capture_server.py') from error
+            raise CaptureError('HTTP 404: server does not support capture options; update monicap_server.py') from error
         if error.code == 503:
-            raise CaptureError(f'HTTP 503: {detail or "capture failed"} (see scope capture_server.log)') from error
+            raise CaptureError(f'HTTP 503: {detail or "capture failed"} (see server capture_server.log)') from error
         raise CaptureError(f'HTTP {error.code}: check token, allowed IP, or server log') from error
     except (OSError, ValueError) as error:
         raise CaptureError(f'Communication failed: {error}') from error
@@ -132,7 +132,7 @@ def validate_png(data):
     raise CaptureError('PNG ending missing')
 
 
-def capture_scope(host, save_path, timeout=5, *, token=None, token_file=None, port=8765,
+def capture_screen(host, save_path, timeout=5, *, token=None, token_file=None, port=8765,
                   stable_ms=0, interval_ms=None, frames=None):
     """Capture once; return Path. Never overwrite or retry. Token required."""
     if token is None:
@@ -167,7 +167,7 @@ def save_png(data, save_path):
     return target
 
 
-class ScopeCaptureClient:
+class MonicapClient:
     """Reusable HTTP API client; configuration is immutable by convention.
 
     All requests are synchronous, independent, and never automatically retried.
@@ -188,19 +188,19 @@ class ScopeCaptureClient:
         """Discover exactly one device, then verify its HTTP health. No capture yet.
 
         Multiple routes to the same persistent device ID are tried in order.
-        Discovery never changes IP configuration. Requires scope_discovery.py.
+        Discovery never changes IP configuration. Requires monicap_discovery.py.
         """
-        from scope_discovery import discover_scopes, read_token, DiscoveryError
+        from monicap_discovery import discover_devices, read_token, DiscoveryError
         token = read_token(token, token_file)
-        devices = discover_scopes(discovery_timeout, token=token, discovery_port=discovery_port,
+        devices = discover_devices(discovery_timeout, token=token, discovery_port=discovery_port,
                                   interface_names=interface_names, interfaces=interfaces, targets=targets)
         devices = [d for d in devices if (name is None or d.name == name)
                    and (device_id is None or d.device_id == device_id)]
         if not devices:
-            raise DiscoveryError('No matching authenticated scope. Check cable/IP, token, server --discovery and UDP firewall.')
+            raise DiscoveryError('No matching authenticated capture server. Check cable/IP, token, server --discovery and UDP firewall.')
         if len({d.device_id for d in devices}) != 1:
             choices = ', '.join(f'{d.name} [{d.device_id}] at {d.host}' for d in devices)
-            raise DiscoveryError('Multiple scopes found; select name or device_id: ' + choices)
+            raise DiscoveryError('Multiple capture servers found; select name or device_id: ' + choices)
         errors = []
         for device in devices:
             client = cls(device.host, token=token, port=device.port, timeout=timeout)
@@ -211,7 +211,7 @@ class ScopeCaptureClient:
                 return client
             except (CaptureError, OSError, ValueError) as error:
                 errors.append(str(error))
-        raise DiscoveryError('Scope discovered, but HTTP health failed. Check TCP firewall/allow-ip: ' + '; '.join(errors))
+        raise DiscoveryError('Capture server discovered, but HTTP health failed. Check TCP firewall/allow-ip: ' + '; '.join(errors))
 
     def health(self):
         return json.loads(request(self.host, self.port, self.token, 'health', self.timeout))
@@ -232,7 +232,7 @@ class ScopeCaptureClient:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', required=True, help='Scope IPv4 address')
+    parser.add_argument('--host', required=True, help='Capture server IPv4 address')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--token-file', type=Path, default=Path(__file__).with_name('capture_token.txt'))
     parser.add_argument('--timeout', type=float, default=5)
@@ -246,7 +246,7 @@ def main():
         if args.health:
             print(json.loads(request(args.host, args.port, token, 'health', args.timeout)))
         else:
-            print('Saved:', capture_scope(args.host, args.output, args.timeout, token=token, port=args.port,
+            print('Saved:', capture_screen(args.host, args.output, args.timeout, token=token, port=args.port,
                                           stable_ms=args.stable_ms))
         return 0
     except (CaptureError, OSError, ValueError) as error:
