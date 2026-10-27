@@ -20,10 +20,10 @@ PNG = (b'\x89PNG\r\n\x1a\n'
 
 class Tests(unittest.TestCase):
     def setUp(self):
-        self.server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: PNG)
+        self.server = CaptureServer(('127.0.0.1', 0), lambda: PNG)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01})
         self.thread.start()
-        self.client = MonicapClient('127.0.0.1', token='test-token', port=self.server.server_port)
+        self.client = MonicapClient('127.0.0.1', port=self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()
@@ -42,11 +42,7 @@ class Tests(unittest.TestCase):
             self.assertEqual(dest.read_bytes(), PNG)
             self.assertEqual(list(dest.parent.iterdir()), [dest])
 
-    def test_auth_and_ip(self):
-        self.client.token = 'bad'
-        with self.assertRaisesRegex(CaptureError, '401'):
-            self.client.capture_png()
-        self.client.token = 'test-token'
+    def test_allowed_ip(self):
         self.server.allowed_ip = '192.0.2.1'
         with self.assertRaisesRegex(CaptureError, '403'):
             self.client.health()
@@ -113,10 +109,10 @@ class Tests(unittest.TestCase):
 
 class StableCaptureTests(unittest.TestCase):
     def setUp(self):
-        self.server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: PNG)
+        self.server = CaptureServer(('127.0.0.1', 0), lambda: PNG)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01})
         self.thread.start()
-        self.client = MonicapClient('127.0.0.1', token='test-token', port=self.server.server_port)
+        self.client = MonicapClient('127.0.0.1', port=self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()
@@ -152,7 +148,7 @@ class StableCaptureTests(unittest.TestCase):
         self.server.capture = lambda: calls.append(1) or PNG
         for query in ({'stable_ms': 99999}, {'stable_ms': 500, 'frames': 1}, {'stable_ms': 'x'}, {'zoom': 2}):
             with self.assertRaisesRegex(CaptureError, '400'):
-                request('127.0.0.1', self.server.server_port, 'test-token', 'capture', 2, query)
+                request('127.0.0.1', self.server.server_port, 'capture', 2, query)
         self.assertEqual(calls, [])
 
     def test_health_reports_features_and_window(self):
@@ -210,11 +206,11 @@ class WindowTargetTests(unittest.TestCase):
 
     def test_window_failure_is_capture_error_503(self):
         target = WindowTarget('Calculator', api=FakeWindows([]))
-        server = CaptureServer(('127.0.0.1', 0), 'test-token', lambda: (target.bbox(), PNG)[1], status=target.status)
+        server = CaptureServer(('127.0.0.1', 0), lambda: (target.bbox(), PNG)[1], status=target.status)
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
         thread.start()
         try:
-            client = MonicapClient('127.0.0.1', token='test-token', port=server.server_port)
+            client = MonicapClient('127.0.0.1', port=server.server_port)
             with self.assertRaisesRegex(CaptureError, "503: Window not found: 'Calculator'"):
                 client.capture_png()
             self.assertFalse(client.health()['window']['found'])

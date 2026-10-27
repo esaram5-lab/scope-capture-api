@@ -14,18 +14,17 @@ from monicap_client import MonicapClient
 from monicap_server import CaptureServer
 from test_capture_api import PNG
 
-TOKEN = 'paired-device-token-123456789'
 NIC = NetworkInterface('test-loopback', '127.0.0.1', '255.0.0.0')
 
 
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
-        self.http = CaptureServer(('127.0.0.1', 0), TOKEN, lambda: PNG)
+        self.http = CaptureServer(('127.0.0.1', 0), lambda: PNG)
         self.worker = threading.Thread(target=self.http.serve_forever, kwargs={'poll_interval': 0.01})
         self.worker.start()
-        self.udp = DiscoveryResponder(TOKEN, 'LAB_PC_01', 'device-one', self.http.server_port,
+        self.udp = DiscoveryResponder('LAB_PC_01', 'device-one', self.http.server_port,
                                      bind='127.0.0.1', port=0).start()
-        self.options = dict(token=TOKEN, interfaces=[NIC], targets=['127.0.0.1'],
+        self.options = dict(interfaces=[NIC], targets=['127.0.0.1'],
                             discovery_port=self.udp.port)
 
     def tearDown(self):
@@ -42,21 +41,23 @@ class DiscoveryTests(unittest.TestCase):
         client = MonicapClient.auto_connect(discovery_timeout=0.1, **self.options)
         self.assertEqual(client.capture_png(), PNG)
 
-    def test_wrong_token_no_device(self):
-        options = dict(self.options, token='wrong-token')
-        self.assertEqual(discover_devices(0.1, **options), [])
-        with self.assertRaisesRegex(DiscoveryError, 'No matching'):
-            MonicapClient.auto_connect(discovery_timeout=0.1, **options)
+    def test_no_device_on_other_port(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent:
+            silent.bind(('127.0.0.1', 0))
+            options = dict(self.options, discovery_port=silent.getsockname()[1])
+            self.assertEqual(discover_devices(0.1, **options), [])
+            with self.assertRaisesRegex(DiscoveryError, 'No matching'):
+                MonicapClient.auto_connect(discovery_timeout=0.1, **options)
 
     def test_filter_and_multiple_device_rejection(self):
         device = discover_devices(0.1, **self.options)[0]
         second = replace(device, name='LAB_PC_02', device_id='device-two')
         with patch('monicap_discovery.discover_devices', return_value=[device, second]):
             with self.assertRaisesRegex(DiscoveryError, 'Multiple capture servers'):
-                MonicapClient.auto_connect(token=TOKEN)
-            client = MonicapClient.auto_connect(token=TOKEN, name='LAB_PC_01')
+                MonicapClient.auto_connect()
+            client = MonicapClient.auto_connect(name='LAB_PC_01')
             self.assertEqual(client.capture_png(), PNG)
-            client = MonicapClient.auto_connect(token=TOKEN, device_id='device-one')
+            client = MonicapClient.auto_connect(device_id='device-one')
             self.assertEqual(client.host, '127.0.0.1')
 
     def test_multiple_routes_one_device_fallback(self):
@@ -66,7 +67,7 @@ class DiscoveryTests(unittest.TestCase):
             port = closed.getsockname()[1]
         bad = replace(device, port=port)
         with patch('monicap_discovery.discover_devices', return_value=[bad, device]):
-            client = MonicapClient.auto_connect(token=TOKEN, timeout=0.1)
+            client = MonicapClient.auto_connect(timeout=0.1)
             self.assertEqual(client.capture_png(), PNG)
 
     def test_interfaces_and_apipa_broadcast(self):
@@ -77,14 +78,13 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(DiscoveryError, 'No active'):
             discover_devices(0.1, interface_names=['missing'], **self.options)
 
-    def test_malformed_unauthenticated_packets_ignored(self):
+    def test_malformed_packets_ignored(self):
         request = dict(service=SERVICE, version=VERSION, type='discover', nonce='a'*32)
-        good = encode_packet(request, TOKEN)
-        self.assertEqual(decode_packet(good, TOKEN, 'discover'), request)
+        good = encode_packet(request)
+        self.assertEqual(decode_packet(good, 'discover'), request)
         for raw in (b'[]', b'not json', b'x'*2049, b'{}', good.replace(b'monicap', b'monicaq')):
-            self.assertIsNone(decode_packet(raw, TOKEN, 'discover'))
-        self.assertIsNone(decode_packet(good, 'wrong', 'discover'))
-        self.assertIsNone(decode_packet(encode_packet(dict(request, version=99), TOKEN), TOKEN, 'discover'))
+            self.assertIsNone(decode_packet(raw, 'discover'))
+        self.assertIsNone(decode_packet(encode_packet(dict(request, version=99)), 'discover'))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
             sender.sendto(b'bad-json', ('127.0.0.1', self.udp.port))
         self.assertEqual(len(discover_devices(0.1, **self.options)), 1)
@@ -95,11 +95,11 @@ class DiscoveryTests(unittest.TestCase):
             fake.settimeout(1)
             def reply():
                 data, peer = fake.recvfrom(2048)
-                request = decode_packet(data, TOKEN, 'discover')
+                request = decode_packet(data, 'discover')
                 base = dict(service=SERVICE, version=VERSION, type='reply',
                             nonce=request['nonce'], name='fake', device_id='fake', port=8765)
-                fake.sendto(encode_packet(dict(base, nonce='0'*32), TOKEN), peer)
-                fake.sendto(encode_packet(dict(base, port=70000), TOKEN), peer)
+                fake.sendto(encode_packet(dict(base, nonce='0'*32)), peer)
+                fake.sendto(encode_packet(dict(base, port=70000)), peer)
                 fake.sendto(b'{}', peer)
             with ThreadPoolExecutor(max_workers=1) as pool:
                 task = pool.submit(reply)

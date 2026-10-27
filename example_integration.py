@@ -1,4 +1,4 @@
-"""Run on the client PC; edit SERVER_IP and token path first."""
+"""Run on the client PC; edit SERVER_IP first."""
 from datetime import datetime
 from pathlib import Path
 from monicap_client import MonicapClient, CaptureBusy, CaptureError
@@ -7,11 +7,7 @@ SERVER_IP = '192.168.0.10'
 
 
 def main():
-    client = MonicapClient(
-        SERVER_IP,
-        token_file=Path(__file__).with_name('capture_token.txt'),
-        timeout=5,
-    )
+    client = MonicapClient(SERVER_IP, timeout=5)
     print(client.health())
     # Call after the screen you want to capture is shown.
     filename = datetime.now().strftime('screen_%Y%m%d_%H%M%S_%f.png')

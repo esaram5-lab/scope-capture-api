@@ -9,7 +9,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
-import secrets
 import socket
 import urllib.parse
 import uuid
@@ -216,10 +215,9 @@ class CaptureServer(ThreadingHTTPServer):
     block_on_close = False
     allow_reuse_address = True
 
-    def __init__(self, address, token, capture, allowed_ip=None, grab=None, status=None):
+    def __init__(self, address, capture, allowed_ip=None, grab=None, status=None):
         """capture() -> PNG bytes. grab() -> (pixel key, make_png) for stable captures; when omitted the
         PNG bytes themselves are compared. status() -> extra health fields (e.g. window lookup)."""
-        self.token = token
         self.capture = capture
         self.grab = grab
         self.status = status
@@ -263,11 +261,6 @@ class Handler(BaseHTTPRequestHandler):
     def authorized(self):
         if self.server.allowed_ip and self.client_address[0] != self.server.allowed_ip:
             self.message(403, 'Client IP not allowed')
-            return False
-        supplied = self.headers.get('Authorization', '')
-        expected = 'Bearer ' + self.server.token
-        if not secrets.compare_digest(supplied.encode(), expected.encode()):
-            self.message(401, 'Invalid token')
             return False
         return True
 
@@ -347,7 +340,6 @@ def main():
     parser.add_argument('--device-id-file', type=Path, default=Path(__file__).with_name('capture_device_id.txt'))
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--allow-ip', help='Only allow this controller IPv4')
-    parser.add_argument('--token-file', type=Path, default=Path(__file__).with_name('capture_token.txt'))
     area = parser.add_mutually_exclusive_group()
     area.add_argument('--bbox', nargs=4, type=int, metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'))
     area.add_argument('--window', metavar='TITLE',
@@ -395,14 +387,7 @@ def main():
                               maxBytes=1_000_000, backupCount=3, encoding='utf-8')
     logging.basicConfig(level=logging.INFO, handlers=[log, logging.StreamHandler()],
                         format='%(asctime)s %(levelname)s %(message)s')
-    if not args.token_file.exists():
-        with args.token_file.open('x', encoding='utf-8') as output:
-            output.write(secrets.token_urlsafe(32))
-        print('Created token file:', args.token_file)
-    token = args.token_file.read_text(encoding='utf-8').strip()
-    if len(token) < 24 or not token.isascii() or any(c.isspace() for c in token):
-        parser.error('Token must be at least 24 ASCII characters without whitespace')
-    with CaptureServer((args.bind, args.port), token, capture, args.allow_ip, grab=grab,
+    with CaptureServer((args.bind, args.port), capture, args.allow_ip, grab=grab,
                        status=target.status if target else None) as server:
         responder = None
         if args.discovery:
@@ -412,7 +397,7 @@ def main():
                     output.write(str(uuid.uuid4()))
             device_id = args.device_id_file.read_text(encoding='utf-8').strip()
             responder = DiscoveryResponder(
-                token, args.name, device_id, args.port, port=args.discovery_port,
+                args.name, device_id, args.port, port=args.discovery_port,
                 allowed_ip=args.allow_ip, api_bind=args.bind,
             ).start()
             logging.info('Discovery enabled UDP=%d name=%s id=%s', responder.port, args.name, device_id)

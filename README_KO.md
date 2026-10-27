@@ -8,6 +8,8 @@ Windows PC(서버)의 현재 화면을 다른 PC(클라이언트)의 Python 프�
 > `ScopeCaptureClient` → `MonicapClient`, `discover_scopes` → `discover_devices`, `ScopeDevice` → `CaptureDevice`,
 > `capture_scope` → `capture_screen`. 검색 프로토콜 service 이름도 `monicap`으로 바뀌어 1.x 서버/클라이언트와는 자동 검색이 되지 않습니다.
 > 서버와 클라이언트를 함께 2.0으로 바꾸세요.
+>
+> 2.0부터 토큰 인증(capture_token.txt, HMAC 검색 서명)을 없앴습니다. 토큰 파일을 복사할 필요가 없고 `token`/`token_file` 인수도 없습니다.
 
 ## 준비
 
@@ -57,9 +59,8 @@ test.png를 열어 화면이 제대로 찍혔는지 확인합니다.
 - `--name`을 생략하면 컴퓨터 이름을 사용합니다.
 - --discovery 사용 시 --bind를 생략하면 0.0.0.0으로 모든 IPv4 인터페이스에서 대기합니다.
 - --discovery 없이 --bind를 생략하면 127.0.0.1에서만 대기합니다.
-- 첫 실행에 capture_token.txt, capture_device_id.txt가 생성됩니다.
-- **capture_token.txt만 클라이언트 PC에 복사**합니다. 장비 ID 파일을 다른 서버 PC에 복사하지 마세요.
-- 토큰 파일 내용은 화면 출력/검색 패킷에 포함되지 않습니다.
+- 첫 실행에 capture_device_id.txt(검색용 장비 ID)가 생성됩니다. 다른 서버 PC에 복사하지 마세요.
+- 클라이언트 PC에 복사할 파일은 없습니다.
 - Ctrl+C로 서버를 종료합니다.
 - 자동 IP가 바뀌는 환경에서는 고정 --allow-ip를 붙이지 않습니다. 고정 IP일 때만 사용하세요.
 
@@ -81,7 +82,8 @@ New-NetFirewallRule -DisplayName "Monicap Discovery UDP" -Direction Inbound -Act
 ```
 
 회사 보안 정책/기존 방화벽 규칙이 우선할 수 있습니다. 반복 생성하지 말고 기존 규칙을 확인하세요.
-HTTP는 암호화되지 않습니다. 신뢰하는 LAN에서 사용하고 인터넷 포트를 열지 마세요.
+**인증이 없습니다.** 서버 포트(TCP 8765)에 닿을 수 있는 PC는 누구나 이 화면을 받을 수 있고, 검색(UDP 8766)에도 응답합니다.
+신뢰하는 LAN에서만 사용하고, 방화벽 규칙을 위처럼 같은 서브넷으로 제한하거나 `--allow-ip 클라이언트IP`로 한 대만 허용하세요. 인터넷 포트는 절대 열지 마세요.
 
 규칙 삭제:
 
@@ -103,7 +105,6 @@ py example_auto_connect.py
 from monicap_client import MonicapClient
 
 client = MonicapClient.auto_connect(
-    token_file=r"C:\Monicap\capture_token.txt",
     discovery_timeout=2,
     timeout=5,
 )
@@ -113,9 +114,7 @@ client.capture_to_file(r"D:\captures\capture.png")
 ```
 
 호출 프로그램 옆에 monicap_client.py와 monicap_discovery.py를 두세요.
-토큰 파일은 절대 경로를 지정하거나 해당 모듈 옆에 둡니다.
-자동 검색 시 HMAC-SHA256으로 요청/응답을 인증합니다. 같은 토큰을 가진 서버만 발견됩니다.
-최초 토큰 파일 전달은 여전히 필요합니다. 자동 검색이 비밀번호 없는 자동 페어링은 아닙니다.
+같은 LAN에서 `--discovery`로 실행 중인 Monicap 서버를 찾아 바로 연결합니다. 별도 페어링/토큰은 없습니다.
 
 ## 5. 인터페이스 지정 / 여러 서버 선택
 
@@ -126,14 +125,12 @@ from monicap_client import MonicapClient
 print(list_interfaces())
 found = discover_devices(
     timeout=2,
-    token_file="capture_token.txt",
     interface_names=["이더넷"],  # 실제 이름 사용. 생략하면 활성 IPv4 NIC 모두 검색
 )
 for device in found:
     print(device.name, device.device_id, device.host, device.port)
 
 client = MonicapClient.auto_connect(
-    token_file="capture_token.txt",
     name="LAB_PC_01",  # 또는 device_id="실제 장비 ID"
     interface_names=["이더넷"],
 )
@@ -141,7 +138,6 @@ client = MonicapClient.auto_connect(
 
 자동 열거는 유선뿐 아니라 활성 Wi-Fi/가상 NIC도 포함합니다. 유선만 원하면 interface_names로 제한하세요.
 서버가 여러 대면 자동 연결은 임의로 하나를 선택하지 않고 오류를 반환합니다.
-서로 다른 토큰을 가진 여러 서버는 각 토큰으로 따로 검색해야 합니다.
 
 ## 6. IP 조건
 
@@ -159,7 +155,6 @@ psutil 없이 직접 NIC 정보를 제공하는 고급 사용법:
 ```python
 from monicap_discovery import NetworkInterface
 client = MonicapClient.auto_connect(
-    token_file="capture_token.txt",
     interfaces=[NetworkInterface("LAN", "169.254.10.20", "255.255.0.0")],
 )
 ```
@@ -167,7 +162,7 @@ client = MonicapClient.auto_connect(
 ## 7. 수동 IP 호출
 
 ```python
-client = MonicapClient("192.168.50.2", token_file="capture_token.txt", timeout=5)
+client = MonicapClient("192.168.50.2", timeout=5)
 print(client.health())
 client.capture_to_file("capture.png")
 ```
@@ -203,7 +198,7 @@ from monicap_discovery import DiscoveryError
 from monicap_client import MonicapClient, CaptureError, CaptureBusy, CaptureUnstable
 
 try:
-    client = MonicapClient.auto_connect(token_file="capture_token.txt")
+    client = MonicapClient.auto_connect()
     client.capture_to_file("capture.png")
 except DiscoveryError as error:
     print("검색/선택/연결 확인 실패:", error)
